@@ -47,6 +47,8 @@ $(T2 permutations,
 $(T2 reduce,
         `reduce!((a, b) => a + b)([1, 2, 3, 4])` returns `10`.
         This is the old implementation of `fold`.)
+$(T2 splitWhen,
+        Lazily splits a range by comparing adjacent elements.)
 $(T2 splitter,
         Lazily splits a range by a separator.)
 $(T2 substitute,
@@ -786,9 +788,9 @@ private struct MapResult(alias fun, Range)
     string  s1 = "hello world!";
     dstring s2 = "日本語";
     dstring s3 = "hello world!"d;
-    auto ms1 = map!(std.ascii.toUpper)(s1);
-    auto ms2 = map!(std.ascii.toUpper)(s2);
-    auto ms3 = map!(std.ascii.toUpper)(s3);
+    auto ms1 = map!(toUpper)(s1);
+    auto ms2 = map!(toUpper)(s2);
+    auto ms3 = map!(toUpper)(s3);
     static assert(!is(ms1[0])); //narrow strings can't be indexed
     assert(ms2[0] == '日');
     assert(ms3[0] == 'H');
@@ -878,7 +880,7 @@ private struct MapResult(alias fun, Range)
 
 // each
 /**
-Eagerly iterates over `r` and calls `fun` over _each element.
+Eagerly iterates over `r` and calls `fun` with _each element.
 
 If no function to call is specified, `each` defaults to doing nothing but
 consuming the entire range. `r.front` will be evaluated, but that can be avoided
@@ -1093,14 +1095,16 @@ public:
 }
 
 ///
-@system unittest
+@safe unittest
 {
     import std.range : iota;
-    import std.typecons : Flag, Yes, No;
+    import std.typecons : No;
 
-    long[] arr;
+    int[] arr;
     iota(5).each!(n => arr ~= n);
     assert(arr == [0, 1, 2, 3, 4]);
+
+    // stop iterating early
     iota(5).each!((n) { arr ~= n; return No.each; });
     assert(arr == [0, 1, 2, 3, 4, 0]);
 
@@ -1111,20 +1115,30 @@ public:
     arr.each!"a++";
     assert(arr == [2, 3, 4, 5, 6, 2]);
 
+    auto m = arr.map!(n => n);
     // by-ref lambdas are not allowed for non-ref ranges
-    static assert(!is(typeof(arr.map!(n => n).each!((ref n) => n++))));
+    static assert(!__traits(compiles, m.each!((ref n) => n++)));
 
     // The default predicate consumes the range
-    auto m = arr.map!(n => n);
     (&m).each();
     assert(m.empty);
+}
 
-    // Indexes are also available for in-place mutations
-    arr[] = 0;
+/// `each` can pass an index variable for iterable objects which support this
+@safe unittest
+{
+    auto arr = new size_t[4];
+
     arr.each!"a=i"();
-    assert(arr == [0, 1, 2, 3, 4, 5]);
+    assert(arr == [0, 1, 2, 3]);
 
-    // opApply iterators work as well
+    arr.each!((i, ref e) => e = i * 2);
+    assert(arr == [0, 2, 4, 6]);
+}
+
+/// opApply iterators work as well
+@system unittest
+{
     static class S
     {
         int x;
@@ -1218,10 +1232,9 @@ public:
 
 // https://issues.dlang.org/show_bug.cgi?id=15357
 // `each` should behave similar to foreach
-/// `each` works with iterable objects which provide an index variable, along with each element
 @safe unittest
 {
-    import std.range : iota, lockstep;
+    import std.range : iota;
 
     auto arr = [1, 2, 3, 4];
 
@@ -1330,7 +1343,7 @@ if (is(typeof(unaryFun!predicate)))
 @safe unittest
 {
     import std.algorithm.comparison : equal;
-    import std.math : approxEqual;
+    import std.math : isClose;
     import std.range;
 
     int[] arr = [ 1, 2, 3, 4, 5 ];
@@ -1352,7 +1365,7 @@ if (is(typeof(unaryFun!predicate)))
     // Mixing convertible types is fair game, too
     double[] c = [ 2.5, 3.0 ];
     auto r1 = chain(c, a, b).filter!(a => cast(int) a != a);
-    assert(approxEqual(r1, [ 2.5 ]));
+    assert(isClose(r1, [ 2.5 ]));
 }
 
 private struct FilterResult(alias pred, Range)
@@ -1991,37 +2004,48 @@ if (isInputRange!Range && !isForwardRange!Range)
     }
 }
 // Outer range for forward range version of chunkBy
-private struct ChunkByOuter(Range)
+private struct ChunkByOuter(Range, bool eqEquivalenceAssured)
 {
     size_t groupNum;
     Range  current;
     Range  next;
+    static if (!eqEquivalenceAssured)
+    {
+        bool nextUpdated;
+    }
 }
 
 // Inner range for forward range version of chunkBy
-private struct ChunkByGroup(alias eq, Range)
+private struct ChunkByGroup(alias eq, Range, bool eqEquivalenceAssured)
 {
     import std.typecons : RefCounted;
 
+    alias OuterRange = ChunkByOuter!(Range, eqEquivalenceAssured);
+
     private size_t groupNum;
-    private Range  start;
+    static if (eqEquivalenceAssured)
+    {
+        private Range  start;
+    }
     private Range  current;
 
-    private RefCounted!(ChunkByOuter!Range) mothership;
+    private RefCounted!(OuterRange) mothership;
 
-    this(RefCounted!(ChunkByOuter!Range) origin)
+    this(RefCounted!(OuterRange) origin)
     {
         groupNum = origin.groupNum;
-
-        start = origin.current.save;
         current = origin.current.save;
-        assert(!start.empty, "Passed range 'r' must not be empty");
+        assert(!current.empty, "Passed range 'r' must not be empty");
+        static if (eqEquivalenceAssured)
+        {
+            start = origin.current.save;
+
+            // Check for reflexivity.
+            assert(eq(start.front, current.front),
+                "predicate is not reflexive");
+        }
 
         mothership = origin;
-
-        // Note: this requires reflexivity.
-        assert(eq(start.front, current.front),
-               "predicate is not reflexive");
     }
 
     @property bool empty() { return groupNum == size_t.max; }
@@ -2029,16 +2053,35 @@ private struct ChunkByGroup(alias eq, Range)
 
     void popFront()
     {
+        static if (!eqEquivalenceAssured)
+        {
+            auto prevElement = current.front;
+        }
+
         current.popFront();
 
-        // Note: this requires transitivity.
-        if (current.empty || !eq(start.front, current.front))
+        static if (eqEquivalenceAssured)
+        {
+            //this requires transitivity from the predicate.
+            immutable nowEmpty = current.empty || !eq(start.front, current.front);
+        }
+        else
+        {
+            immutable nowEmpty = current.empty || !eq(prevElement, current.front);
+        }
+
+
+        if (nowEmpty)
         {
             if (groupNum == mothership.groupNum)
             {
                 // If parent range hasn't moved on yet, help it along by
                 // saving location of start of next Group.
                 mothership.next = current.save;
+                static if (!eqEquivalenceAssured)
+                {
+                    mothership.nextUpdated = true;
+                }
             }
 
             groupNum = size_t.max;
@@ -2053,37 +2096,44 @@ private struct ChunkByGroup(alias eq, Range)
     }
 }
 
+private enum GroupingOpType{binaryEquivalent, binaryAny, unary}
+
 // Single-pass implementation of chunkBy for forward ranges.
-private struct ChunkByImpl(alias pred, alias eq, bool isUnary, Range)
+private struct ChunkByImpl(alias pred, alias eq, GroupingOpType opType, Range)
 if (isForwardRange!Range)
 {
     import std.typecons : RefCounted;
 
-    static assert(isForwardRange!(ChunkByGroup!(eq,Range)));
+    enum bool eqEquivalenceAssured = opType != GroupingOpType.binaryAny;
+    alias OuterRange = ChunkByOuter!(Range, eqEquivalenceAssured);
+    alias InnerRange = ChunkByGroup!(eq, Range, eqEquivalenceAssured);
 
-    private RefCounted!(ChunkByOuter!Range) impl;
+    static assert(isForwardRange!InnerRange);
+
+    private RefCounted!OuterRange impl;
 
     this(Range r)
     {
-        impl = RefCounted!(ChunkByOuter!Range)(0, r, r.save);
+        static if (eqEquivalenceAssured)
+        {
+            impl = RefCounted!OuterRange(0, r, r.save);
+        }
+        else impl = RefCounted!OuterRange(0, r, r.save, false);
     }
 
     @property bool empty() { return impl.current.empty; }
 
-    @property auto front()
+    static if (opType == GroupingOpType.unary) @property auto front()
     {
-        static if (isUnary)
-        {
-            import std.typecons : tuple;
-            return tuple(unaryFun!pred(impl.current.front), ChunkByGroup!(eq,Range)(impl));
-        }
-        else
-        {
-            return ChunkByGroup!(eq,Range)(impl);
-        }
+        import std.typecons : tuple;
+        return tuple(unaryFun!pred(impl.current.front), InnerRange(impl));
+    }
+    else @property auto front()
+    {
+        return InnerRange(impl);
     }
 
-    void popFront()
+    static if (eqEquivalenceAssured) void popFront()
     {
         // Scan for next group. If we're lucky, one of our Groups would have
         // already set .next to the start of the next group, in which case the
@@ -2095,6 +2145,24 @@ if (isForwardRange!Range)
 
         impl.current = impl.next.save;
 
+        // Indicate to any remaining Groups that we have moved on.
+        impl.groupNum++;
+    }
+    else void popFront()
+    {
+        if (impl.nextUpdated)
+        {
+            impl.current = impl.next.save;
+        }
+        else while (true)
+        {
+            auto prevElement = impl.current.front;
+            impl.current.popFront();
+            if (impl.current.empty) break;
+            if (!eq(prevElement, impl.current.front)) break;
+        }
+
+        impl.nextUpdated = false;
         // Indicate to any remaining Groups that we have moved on.
         impl.groupNum++;
     }
@@ -2144,8 +2212,6 @@ if (isForwardRange!Range)
     auto i = 2;
     assert(v.chunkBy!((a,b) => a % i == b % i).equal!equal([[2,4,8],[3],[6],[9,1,5,7]]));
 }
-
-
 
 @system unittest
 {
@@ -2218,7 +2284,8 @@ if (isForwardRange!Range)
  * reflexive (`pred(x,x)` is always true), symmetric
  * (`pred(x,y) == pred(y,x)`), and transitive (`pred(x,y) && pred(y,z)`
  * implies `pred(x,z)`). If this is not the case, the range returned by
- * chunkBy may assert at runtime or behave erratically.
+ * chunkBy may assert at runtime or behave erratically. Use $(LREF splitWhen)
+ * if you want to chunk by a predicate that is not an equivalence relation.
  *
  * Params:
  *  pred = Predicate for determining equivalence.
@@ -2228,7 +2295,8 @@ if (isForwardRange!Range)
  * all elements in a given subrange are equivalent under the given predicate.
  * With a unary predicate, a range of tuples is returned, with the tuple
  * consisting of the result of the unary predicate for each subrange, and the
- * subrange itself.
+ * subrange itself. Copying the range currently has reference semantics, but this may
+ * change in the future.
  *
  * Notes:
  *
@@ -2244,17 +2312,20 @@ if (isForwardRange!Range)
 auto chunkBy(alias pred, Range)(Range r)
 if (isInputRange!Range)
 {
-
-    enum bool isUnary = ChunkByImplIsUnary!(pred, Range);
-
-    static if (isUnary)
+    static if (ChunkByImplIsUnary!(pred, Range))
+    {
+        enum opType = GroupingOpType.unary;
         alias eq = binaryFun!((a, b) => unaryFun!pred(a) == unaryFun!pred(b));
+    }
     else
+    {
+        enum opType = GroupingOpType.binaryEquivalent;
         alias eq = binaryFun!pred;
+    }
     static if (isForwardRange!Range)
-        return ChunkByImpl!(pred, eq, isUnary, Range)(r);
+        return ChunkByImpl!(pred, eq, opType, Range)(r);
     else
-        return  ChunkByImpl!(pred, Range)(r);
+        return ChunkByImpl!(pred, Range)(r);
 }
 
 /// Showing usage with binary predicate:
@@ -2282,20 +2353,6 @@ if (isInputRange!Range)
         [[1, 2], [2, 2]],
         [[2, 3]]
     ]));
-}
-
-version (none) // this example requires support for non-equivalence relations
-@safe unittest
-{
-    // Grouping by maximum adjacent difference:
-    import std.math : abs;
-    auto r3 = [1, 3, 2, 5, 4, 9, 10].chunkBy!((a, b) => abs(a-b) < 3);
-    assert(r3.equal!equal([
-        [1, 3, 2],
-        [5, 4],
-        [9, 10]
-    ]));
-
 }
 
 /// Showing usage with unary predicate:
@@ -2695,12 +2752,109 @@ version (none) // this example requires support for non-equivalence relations
     }
 }
 
-// https://issues.dlang.org/show_bug.cgi?id=13595
-version (none) // This requires support for non-equivalence relations
+
+
+// https://issues.dlang.org/show_bug.cgi?id=13805
+@system unittest
+{
+    [""].map!((s) => s).chunkBy!((x, y) => true);
+}
+
+/**
+Splits a forward range into subranges in places determined by a binary
+predicate.
+
+When iterating, one element of `r` is compared with `pred` to the next
+element. If `pred` return true, a new subrange is started for the next element.
+Otherwise, they are part of the same subrange.
+
+If the elements are compared with an inequality (!=) operator, consider
+$(LREF chunkBy) instead, as it's likely faster to execute.
+
+Params:
+pred = Predicate for determining where to split. The earlier element in the
+source range is always given as the first argument.
+r = A $(REF_ALTTEXT forward range, isForwardRange, std,range,primitives) to be split.
+Returns: a range of subranges of `r`, split such that within a given subrange,
+calling `pred` with any pair of adjacent elements as arguments returns `false`.
+Copying the range currently has reference semantics, but this may change in the future.
+
+See_also:
+$(LREF splitter), which uses elements as splitters instead of element-to-element
+relations.
+*/
+
+auto splitWhen(alias pred, Range)(Range r)
+if (isForwardRange!Range)
+{   import std.functional : not;
+    return ChunkByImpl!(not!pred, not!pred, GroupingOpType.binaryAny, Range)(r);
+}
+
+//FIXME: these should be @safe
+///
+nothrow pure @system unittest
+{
+    import std.algorithm.comparison : equal;
+    import std.range : dropExactly;
+    auto source = [4, 3, 2, 11, 0, -3, -3, 5, 3, 0];
+
+    auto result1 = source.splitWhen!((a,b) => a <= b);
+    assert(result1.save.equal!equal([
+        [4, 3, 2],
+        [11, 0, -3],
+        [-3],
+        [5, 3, 0]
+    ]));
+
+    //splitWhen, like chunkBy, is currently a reference range (this may change
+    //in future). Remember to call `save` when appropriate.
+    auto result2 = result1.dropExactly(2);
+    assert(result1.save.equal!equal([
+        [-3],
+        [5, 3, 0]
+    ]));
+}
+
+//ensure we don't iterate the underlying range twice
+nothrow @system unittest
+{
+    import std.algorithm.comparison : equal;
+    import std.math : abs;
+
+    struct SomeRange
+    {
+        int[] elements;
+        static int popfrontsSoFar;
+
+        auto front(){return elements[0];}
+        nothrow void popFront()
+        {   popfrontsSoFar++;
+            elements = elements[1 .. $];
+        }
+        auto empty(){return elements.length == 0;}
+        auto save(){return this;}
+    }
+
+    auto result = SomeRange([10, 9, 8, 5, 0, 1, 0, 8, 11, 10, 8, 12])
+        .splitWhen!((a, b) => abs(a - b) >= 3);
+
+    assert(result.equal!equal([
+        [10, 9, 8],
+        [5],
+        [0, 1, 0],
+        [8],
+        [11, 10, 8],
+        [12]
+    ]));
+
+    assert(SomeRange.popfrontsSoFar == 12);
+}
+
+// Issue 13595
 @system unittest
 {
     import std.algorithm.comparison : equal;
-    auto r = [1, 2, 3, 4, 5, 6, 7, 8, 9].chunkBy!((x, y) => ((x*y) % 3) == 0);
+    auto r = [1, 2, 3, 4, 5, 6, 7, 8, 9].splitWhen!((x, y) => ((x*y) % 3) > 0);
     assert(r.equal!equal([
         [1],
         [2, 3, 4],
@@ -2709,10 +2863,25 @@ version (none) // This requires support for non-equivalence relations
     ]));
 }
 
-// https://issues.dlang.org/show_bug.cgi?id=13805
-@system unittest
+nothrow pure @system unittest
 {
-    [""].map!((s) => s).chunkBy!((x, y) => true);
+    // Grouping by maximum adjacent difference:
+    import std.math : abs;
+    import std.algorithm.comparison : equal;
+    auto r3 = [1, 3, 2, 5, 4, 9, 10].splitWhen!((a, b) => abs(a-b) >= 3);
+    assert(r3.equal!equal([
+        [1, 3, 2],
+        [5, 4],
+        [9, 10]
+    ]));
+}
+
+// empty range splitWhen
+@nogc nothrow pure @system unittest
+{
+    int[1] sliceable;
+    auto result = sliceable[0 .. 0].splitWhen!((a,b) => a+b > 10);
+    assert(result.empty);
 }
 
 // joiner
@@ -3815,7 +3984,7 @@ if (fun.length >= 1)
 
             static if (mustInitialize) if (initialized == false)
             {
-                import std.conv : emplaceRef;
+                import core.internal.lifetime : emplaceRef;
                 foreach (i, f; binfuns)
                     emplaceRef!(Args[i])(args[i], e);
                 initialized = true;
@@ -3851,7 +4020,7 @@ remarkable power and flexibility.
 @safe unittest
 {
     import std.algorithm.comparison : max, min;
-    import std.math : approxEqual;
+    import std.math : isClose;
     import std.range;
 
     int[] arr = [ 1, 2, 3, 4, 5 ];
@@ -3888,11 +4057,11 @@ remarkable power and flexibility.
     // Mixing convertible types is fair game, too
     double[] c = [ 2.5, 3.0 ];
     auto r1 = reduce!("a + b")(chain(a, b, c));
-    assert(approxEqual(r1, 112.5));
+    assert(isClose(r1, 112.5));
 
     // To minimize nesting of parentheses, Uniform Function Call Syntax can be used
     auto r2 = chain(a, b, c).reduce!("a + b");
-    assert(approxEqual(r2, 112.5));
+    assert(isClose(r2, 112.5));
 }
 
 /**
@@ -3906,20 +4075,20 @@ The number of seeds must be correspondingly increased.
 @safe unittest
 {
     import std.algorithm.comparison : max, min;
-    import std.math : approxEqual, sqrt;
+    import std.math : isClose, sqrt;
     import std.typecons : tuple, Tuple;
 
     double[] a = [ 3.0, 4, 7, 11, 3, 2, 5 ];
     // Compute minimum and maximum in one pass
     auto r = reduce!(min, max)(a);
     // The type of r is Tuple!(int, int)
-    assert(approxEqual(r[0], 2));  // minimum
-    assert(approxEqual(r[1], 11)); // maximum
+    assert(isClose(r[0], 2));  // minimum
+    assert(isClose(r[1], 11)); // maximum
 
     // Compute sum and sum of squares in one pass
     r = reduce!("a + b", "a + b * b")(tuple(0.0, 0.0), a);
-    assert(approxEqual(r[0], 35));  // sum
-    assert(approxEqual(r[1], 233)); // sum of squares
+    assert(isClose(r[0], 35));  // sum
+    assert(isClose(r[1], 233)); // sum of squares
     // Compute average and standard deviation from the above
     auto avg = r[0] / a.length;
     assert(avg == 5);
@@ -4416,7 +4585,7 @@ if (fun.length >= 1)
 {
     import std.algorithm.comparison : max, min;
     import std.array : array;
-    import std.math : approxEqual;
+    import std.math : isClose;
     import std.range : chain;
 
     int[] arr = [1, 2, 3, 4, 5];
@@ -4453,11 +4622,11 @@ if (fun.length >= 1)
     // Mixing convertible types is fair game, too
     double[] c = [2.5, 3.0];
     auto r1 = cumulativeFold!"a + b"(chain(a, b, c));
-    assert(approxEqual(r1, [3, 7, 107, 109.5, 112.5]));
+    assert(isClose(r1, [3, 7, 107, 109.5, 112.5]));
 
     // To minimize nesting of parentheses, Uniform Function Call Syntax can be used
     auto r2 = chain(a, b, c).cumulativeFold!"a + b";
-    assert(approxEqual(r2, [3, 7, 107, 109.5, 112.5]));
+    assert(isClose(r2, [3, 7, 107, 109.5, 112.5]));
 }
 
 /**
@@ -4472,20 +4641,20 @@ The number of seeds must be correspondingly increased.
 {
     import std.algorithm.comparison : max, min;
     import std.algorithm.iteration : map;
-    import std.math : approxEqual;
+    import std.math : isClose;
     import std.typecons : tuple;
 
     double[] a = [3.0, 4, 7, 11, 3, 2, 5];
     // Compute minimum and maximum in one pass
     auto r = a.cumulativeFold!(min, max);
     // The type of r is Tuple!(int, int)
-    assert(approxEqual(r.map!"a[0]", [3, 3, 3, 3, 3, 2, 2]));     // minimum
-    assert(approxEqual(r.map!"a[1]", [3, 4, 7, 11, 11, 11, 11])); // maximum
+    assert(isClose(r.map!"a[0]", [3, 3, 3, 3, 3, 2, 2]));     // minimum
+    assert(isClose(r.map!"a[1]", [3, 4, 7, 11, 11, 11, 11])); // maximum
 
     // Compute sum and sum of squares in one pass
     auto r2 = a.cumulativeFold!("a + b", "a + b * b")(tuple(0.0, 0.0));
-    assert(approxEqual(r2.map!"a[0]", [3, 7, 14, 25, 28, 30, 35]));      // sum
-    assert(approxEqual(r2.map!"a[1]", [9, 25, 74, 195, 204, 208, 233])); // sum of squares
+    assert(isClose(r2.map!"a[0]", [3, 7, 14, 25, 28, 30, 35]));      // sum
+    assert(isClose(r2.map!"a[1]", [9, 25, 74, 195, 204, 208, 233])); // sum of squares
 }
 
 @safe unittest
@@ -4527,7 +4696,7 @@ The number of seeds must be correspondingly increased.
 {
     import std.algorithm.comparison : max, min;
     import std.array : array;
-    import std.math : approxEqual;
+    import std.math : isClose;
     import std.typecons : tuple;
 
     const float a = 0.0;
@@ -4535,10 +4704,10 @@ The number of seeds must be correspondingly increased.
     float[] c = [1.2, 3, 3.3];
 
     auto r = cumulativeFold!"a + b"(b, a);
-    assert(approxEqual(r, [1.2, 4.2, 7.5]));
+    assert(isClose(r, [1.2, 4.2, 7.5]));
 
     auto r2 = cumulativeFold!"a + b"(c, a);
-    assert(approxEqual(r2, [1.2, 4.2, 7.5]));
+    assert(isClose(r2, [1.2, 4.2, 7.5]));
 
     const numbers = [10, 30, 20];
     enum m = numbers.cumulativeFold!(min).array;
@@ -4549,16 +4718,16 @@ The number of seeds must be correspondingly increased.
 
 @safe unittest
 {
-    import std.math : approxEqual;
+    import std.math : isClose;
     import std.typecons : tuple;
 
     enum foo = "a + 0.5 * b";
     auto r = [0, 1, 2, 3];
     auto r1 = r.cumulativeFold!foo;
     auto r2 = r.cumulativeFold!(foo, foo);
-    assert(approxEqual(r1, [0, 0.5, 1.5, 3]));
-    assert(approxEqual(r2.map!"a[0]", [0, 0.5, 1.5, 3]));
-    assert(approxEqual(r2.map!"a[1]", [0, 0.5, 1.5, 3]));
+    assert(isClose(r1, [0, 0.5, 1.5, 3]));
+    assert(isClose(r2.map!"a[0]", [0, 0.5, 1.5, 3]));
+    assert(isClose(r2.map!"a[1]", [0, 0.5, 1.5, 3]));
 }
 
 @safe unittest
@@ -4671,9 +4840,9 @@ Returns:
     one separator is given, the result is a range with two empty elements.
 
 See_Also:
- $(REF _splitter, std,regex) for a version that splits using a regular
-expression defined separator and
- $(REF _split, std,array) for a version that splits eagerly.
+ $(REF _splitter, std,regex) for a version that splits using a regular expression defined separator,
+ $(REF _split, std,array) for a version that splits eagerly and
+ $(LREF splitWhen), which compares adjacent elements instead of element against separator.
 */
 auto splitter(alias pred = "a == b", Range, Separator)(Range r, Separator s)
 if (is(typeof(binaryFun!pred(r.front, s)) : bool)
@@ -5459,7 +5628,7 @@ private struct SplitterResult(alias isTerminator, Range)
         ["là", "dove", "terminava", "quella", "valle"]
     ));
     assert(equal(
-        splitter!(std.uni.isWhite)("là dove terminava quella valle"),
+        splitter!(isWhite)("là dove terminava quella valle"),
         ["là", "dove", "terminava", "quella", "valle"]
     ));
     assert(equal(splitter!"a=='本'"("日本語"), ["日", "語"]));
@@ -6548,9 +6717,9 @@ if (isInputRange!R && !isInfinite!R && is(typeof(seed = seed + r.front)))
     assert(sum([1F, 2, 3, 4]) == 10);
 
     //Force pair-wise floating point sumation on large integers
-    import std.math : approxEqual;
+    import std.math : isClose;
     assert(iota(ulong.max / 2, ulong.max / 2 + 4096).sum(0.0)
-               .approxEqual((ulong.max / 2) * 4096.0 + 4096^^2 / 2));
+               .isClose((ulong.max / 2) * 4096.0 + 4096^^2 / 2));
 }
 
 // Pairwise summation http://en.wikipedia.org/wiki/Pairwise_summation
@@ -6828,13 +6997,13 @@ if (isInputRange!R &&
 ///
 @safe @nogc pure nothrow unittest
 {
-    import std.math : approxEqual, isNaN;
+    import std.math : isClose, isNaN;
 
     static immutable arr1 = [1, 2, 3];
     static immutable arr2 = [1.5, 2.5, 12.5];
 
-    assert(arr1.mean.approxEqual(2));
-    assert(arr2.mean.approxEqual(5.5));
+    assert(arr1.mean.isClose(2));
+    assert(arr2.mean.isClose(5.5));
 
     assert(arr1[0 .. 0].mean.isNaN);
 }
@@ -6842,13 +7011,13 @@ if (isInputRange!R &&
 @safe pure nothrow unittest
 {
     import std.internal.test.dummyrange : ReferenceInputRange;
-    import std.math : approxEqual;
+    import std.math : isClose;
 
     auto r1 = new ReferenceInputRange!int([1, 2, 3]);
-    assert(r1.mean.approxEqual(2));
+    assert(r1.mean.isClose(2));
 
     auto r2 = new ReferenceInputRange!double([1.5, 2.5, 12.5]);
-    assert(r2.mean.approxEqual(5.5));
+    assert(r2.mean.isClose(5.5));
 }
 
 // Test user defined types
@@ -6856,7 +7025,7 @@ if (isInputRange!R &&
 {
     import std.bigint : BigInt;
     import std.internal.test.dummyrange : ReferenceInputRange;
-    import std.math : approxEqual;
+    import std.math : isClose;
 
     auto bigint_arr = [BigInt("1"), BigInt("2"), BigInt("3"), BigInt("6")];
     auto bigint_arr2 = new ReferenceInputRange!BigInt([
@@ -6876,8 +7045,8 @@ if (isInputRange!R &&
 
     // both overloads
     auto d_arr = [MyFancyDouble(10), MyFancyDouble(15), MyFancyDouble(30)];
-    assert(mean!(double)(cast(double[]) d_arr).approxEqual(18.333));
-    assert(mean(d_arr, MyFancyDouble(0)).approxEqual(18.333));
+    assert(mean!(double)(cast(double[]) d_arr).isClose(18.33333333));
+    assert(mean(d_arr, MyFancyDouble(0)).isClose(18.33333333));
 }
 
 // uniq

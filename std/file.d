@@ -3460,31 +3460,6 @@ else version (Posix) string getcwd() @trusted
     assert(s.length);
 }
 
-version (Darwin)
-    private extern (C) int _NSGetExecutablePath(char* buf, uint* bufsize);
-else version (FreeBSD)
-    private extern (C) int sysctl (const int* name, uint namelen, void* oldp,
-        size_t* oldlenp, const void* newp, size_t newlen);
-else version (DragonFlyBSD)
-    private extern (C) int sysctl (const int* name, uint namelen, void* oldp,
-        size_t* oldlenp, const void* newp, size_t newlen);
-else version (NetBSD)
-    private extern (C) int sysctl (const int* name, uint namelen, void* oldp,
-        size_t* oldlenp, const void* newp, size_t newlen);
-
-version (FreeBSD)
-{
-    version = thisExePathHasSysCtlProcName;
-}
-else version (NetBSD)
-{
-    version = thisExePathHasSysCtlProcName;
-}
-else version (DragonFlyBSD)
-{
-    version = thisExePathHasSysCtlProcName;
-}
-
 /**
  * Returns the full path of the current executable.
  *
@@ -3498,6 +3473,7 @@ else version (DragonFlyBSD)
 {
     version (Darwin)
     {
+        import core.sys.darwin.mach.dyld : _NSGetExecutablePath;
         import core.sys.posix.stdlib : realpath;
         import std.conv : to;
         import std.exception : errnoEnforce;
@@ -3540,45 +3516,12 @@ else version (DragonFlyBSD)
             buffer.length *= 2;
         }
     }
-    else version (thisExePathHasSysCtlProcName)
+    else version (DragonFlyBSD)
     {
+        import core.sys.dragonflybsd.sys.sysctl : sysctl, CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME;
         import std.exception : errnoEnforce, assumeUnique;
-        enum
-        {
-            CTL_KERN = 1,
-            KERN_PROC = 14
-        }
 
-        version (NetBSD)
-        {
-            enum
-            {
-                KERN_PROC_ARGS = 48,
-                KERN_PROC_PATHNAME = 5
-            }
-
-            int[4] mib = [CTL_KERN, KERN_PROC_ARGS, -1, KERN_PROC_PATHNAME];
-        }
-        else
-        {
-            version (FreeBSD)
-            {
-                enum
-                {
-                    KERN_PROC_PATHNAME = 12
-                }
-            }
-            else
-            {
-                enum
-                {
-                    KERN_PROC_PATHNAME = 9
-                }
-            }
-
-            int[4] mib = [CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1];
-        }
-
+        int[4] mib = [CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1];
         size_t len;
 
         auto result = sysctl(mib.ptr, mib.length, null, &len, null, 0); // get the length of the path
@@ -3589,6 +3532,78 @@ else version (DragonFlyBSD)
         errnoEnforce(result == 0);
 
         return buffer.assumeUnique;
+    }
+    else version (FreeBSD)
+    {
+        import core.sys.freebsd.sys.sysctl : sysctl, CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME;
+        import std.exception : errnoEnforce, assumeUnique;
+
+        int[4] mib = [CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1];
+        size_t len;
+
+        auto result = sysctl(mib.ptr, mib.length, null, &len, null, 0); // get the length of the path
+        errnoEnforce(result == 0);
+
+        auto buffer = new char[len - 1];
+        result = sysctl(mib.ptr, mib.length, buffer.ptr, &len, null, 0);
+        errnoEnforce(result == 0);
+
+        return buffer.assumeUnique;
+    }
+    else version (NetBSD)
+    {
+        import core.sys.netbsd.sys.sysctl : sysctl, CTL_KERN, KERN_PROC_ARGS, KERN_PROC_PATHNAME;
+        import std.exception : errnoEnforce, assumeUnique;
+
+        int[4] mib = [CTL_KERN, KERN_PROC_ARGS, -1, KERN_PROC_PATHNAME];
+        size_t len;
+
+        auto result = sysctl(mib.ptr, mib.length, null, &len, null, 0); // get the length of the path
+        errnoEnforce(result == 0);
+
+        auto buffer = new char[len - 1];
+        result = sysctl(mib.ptr, mib.length, buffer.ptr, &len, null, 0);
+        errnoEnforce(result == 0);
+
+        return buffer.assumeUnique;
+    }
+    else version (OpenBSD)
+    {
+        import core.sys.openbsd.sys.sysctl : sysctl, CTL_KERN, KERN_PROC_ARGS, KERN_PROC_ARGV;
+        import core.sys.posix.unistd : getpid;
+        import std.conv : to;
+        import std.exception : enforce, errnoEnforce;
+        import std.process : searchPathFor;
+
+        int[4] mib = [CTL_KERN, KERN_PROC_ARGS, getpid(), KERN_PROC_ARGV];
+        size_t len;
+
+        auto result = sysctl(mib.ptr, mib.length, null, &len, null, 0);
+        errnoEnforce(result == 0);
+
+        auto argv = new char*[len - 1];
+        result = sysctl(mib.ptr, mib.length, argv.ptr, &len, null, 0);
+        errnoEnforce(result == 0);
+
+        auto argv0 = argv[0];
+        if (*argv0 == '/' || *argv0 == '.')
+        {
+            import core.sys.posix.stdlib : realpath;
+            auto absolutePath = realpath(argv0, null);
+            scope (exit)
+            {
+                if (absolutePath)
+                    free(absolutePath);
+            }
+            errnoEnforce(absolutePath);
+            return to!(string)(absolutePath);
+        }
+        else
+        {
+            auto absolutePath = searchPathFor(to!string(argv0));
+            errnoEnforce(absolutePath);
+            return absolutePath;
+        }
     }
     else version (Solaris)
     {
@@ -4436,15 +4451,15 @@ version (Windows) @safe unittest
         $(LREF FileException) if there is an error (including if the given
         file is not a directory).
  +/
-void rmdirRecurse(scope const(char)[] pathname)
+void rmdirRecurse(scope const(char)[] pathname) @safe
 {
     //No references to pathname will be kept after rmdirRecurse,
     //so the cast is safe
-    rmdirRecurse(DirEntry(cast(string) pathname));
+    rmdirRecurse(DirEntry((() @trusted => cast(string) pathname)()));
 }
 
 /// ditto
-void rmdirRecurse(ref DirEntry de)
+void rmdirRecurse(ref DirEntry de) @safe
 {
     if (!de.isDir)
         throw new FileException(de.name, "Not a directory");
@@ -4458,11 +4473,16 @@ void rmdirRecurse(ref DirEntry de)
     }
     else
     {
-        // all children, recursively depth-first
-        foreach (DirEntry e; dirEntries(de.name, SpanMode.depth, false))
-        {
-            attrIsDir(e.linkAttributes) ? rmdir(e.name) : remove(e.name);
-        }
+        // dirEntries is @system because it uses a DirIterator with a
+        // RefCounted variable, but here, no references to the payload is
+        // escaped to the outside, so this should be @trusted
+        () @trusted {
+            // all children, recursively depth-first
+            foreach (DirEntry e; dirEntries(de.name, SpanMode.depth, false))
+            {
+                attrIsDir(e.linkAttributes) ? rmdir(e.name) : remove(e.name);
+            }
+        }();
 
         // the dir itself
         rmdir(de.name);
@@ -4474,7 +4494,7 @@ void rmdirRecurse(ref DirEntry de)
 //"rmdirRecurse(in char[] pathname)" implementation. That is needlessly
 //expensive.
 //A DirEntry is a bit big (72B), so keeping the "by ref" signature is desirable.
-void rmdirRecurse(DirEntry de)
+void rmdirRecurse(DirEntry de) @safe
 {
     rmdirRecurse(de);
 }
@@ -4920,19 +4940,6 @@ foreach (DirEntry e; dirEntries("dmd-testing", SpanMode.breadth))
     writeln(e.name, "\t", e.size);
 }
 
-// Iterate over all *.d files in current directory and all its subdirectories
-auto dFiles = dirEntries("", SpanMode.depth).filter!(f => f.name.endsWith(".d"));
-foreach (d; dFiles)
-    writeln(d.name);
-
-// Hook it up with std.parallelism to compile them all in parallel:
-foreach (d; parallel(dFiles, 1)) //passes by 1 file to each thread
-{
-    string cmd = "dmd -c "  ~ d.name;
-    writeln(cmd);
-    std.process.executeShell(cmd);
-}
-
 // Iterate over all D source files in current directory and all its
 // subdirectories
 auto dFiles = dirEntries("","*.{d,di}",SpanMode.depth);
@@ -4950,24 +4957,45 @@ auto dirEntries(string path, SpanMode mode, bool followSymlink = true)
 {
     string[] listdir(string pathname)
     {
-        import std.algorithm;
-        import std.array;
-        import std.file;
-        import std.path;
+        import std.algorithm.iteration : filter, map;
+        import std.array : array;
+        import std.path : baseName;
 
-        return std.file.dirEntries(pathname, SpanMode.shallow)
+        return dirEntries(pathname, SpanMode.shallow)
             .filter!(a => a.isFile)
-            .map!(a => std.path.baseName(a.name))
+            .map!(a => baseName(a.name))
             .array;
     }
 
-    void main(string[] args)
+    void main()
     {
         import std.stdio;
 
-        string[] files = listdir(args[1]);
-        writefln("%s", files);
-     }
+        string[] files = listdir(".");
+        writeln(files);
+    }
+}
+
+/// Compile D files in parallel:
+version (StdDdoc)
+@system unittest
+{
+    import std.stdio;
+    import std.parallelism;
+    import std.process;
+
+    // Iterate over all *.d files in current directory and all its subdirectories
+    auto dFiles = dirEntries(".", "*.d", SpanMode.depth);
+    foreach (d; dFiles)
+        writeln(d.name);
+
+    foreach (d; parallel(dFiles, 1)) // process each entry in a separate thread
+    {
+        // compile source file
+        string cmd = "dmd -c " ~ d.name;
+        writeln(cmd);
+        std.process.executeShell(cmd);
+    }
 }
 
 @system unittest
@@ -5191,7 +5219,7 @@ slurp(Types...)(string filename, scope const(char)[] format)
     import std.array : appender;
     import std.conv : text;
     import std.exception : enforce;
-    import std.format : formattedRead;
+    import std.format.read : formattedRead;
     import std.stdio : File;
     import std.string : stripRight;
 

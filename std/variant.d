@@ -2,7 +2,7 @@
 
 /**
 This module implements a
-$(HTTP erdani.org/publications/cuj-04-2002.html,discriminated union)
+$(HTTP erdani.org/publications/cuj-04-2002.php.html,discriminated union)
 type (a.k.a.
 $(HTTP en.wikipedia.org/wiki/Tagged_union,tagged union),
 $(HTTP en.wikipedia.org/wiki/Algebraic_data_type,algebraic type)).
@@ -22,6 +22,9 @@ In addition to $(LREF Variant), this module also defines the $(LREF Algebraic)
 type constructor. Unlike `Variant`, `Algebraic` only allows a finite set of
 types, which are specified in the instantiation (e.g. $(D Algebraic!(int,
 string)) may only hold an `int` or a `string`).
+
+$(RED Warning: $(LREF Algebraic) is outdated and not recommended for use in new
+code. Instead, use $(REF SumType, std,sumtype).)
 
 Credits: Reviewed by Brad Roberts. Daniel Keep provided a detailed code review
 prompting the following improvements: (1) better support for arrays; (2) support
@@ -343,7 +346,7 @@ private:
                            is(T == shared const(U), U) ||
                            is(T ==    immutable(U), U))
                 {
-                    import std.conv : emplaceRef;
+                    import core.internal.lifetime : emplaceRef;
 
                     auto zat = cast(T*) target;
                     if (src)
@@ -666,6 +669,8 @@ public:
         }
         else
         {
+            import core.lifetime : copyEmplace;
+
             static if (!AllowedTypes.length || anySatisfy!(hasElaborateDestructor, AllowedTypes))
             {
                 // Assignment should destruct previous value
@@ -673,55 +678,17 @@ public:
             }
 
             static if (T.sizeof <= size)
-            {
-                import core.stdc.string : memcpy;
-                // rhs has already been copied onto the stack, so even if T is
-                // shared, it's not really shared. Therefore, we can safely
-                // remove the shared qualifier when copying, as we are only
-                // copying from the unshared stack.
-                //
-                // In addition, the storage location is not accessible outside
-                // the Variant, so even if shared data is stored there, it's
-                // not really shared, as it's copied out as well.
-                memcpy(&store, cast(const(void*)) &rhs, rhs.sizeof);
-                static if (hasElaborateCopyConstructor!T)
-                {
-                    // Safer than using typeid's postblit function because it
-                    // type-checks the postblit function against the qualifiers
-                    // of the type.
-                    (cast(T*)&store).__xpostblit();
-                }
-            }
+                copyEmplace(rhs, *cast(T*) &store);
             else
             {
-                import core.stdc.string : memcpy;
-                import std.traits : hasMember;
-                static if (hasMember!(T, "__ctor") && __traits(compiles, {new T(T.init);}))
-                {
-                    auto p = new T(rhs);
-                }
-                else static if (is(T == U[n], U, size_t n))
-                {
-                    alias UT = Unqual!T;
-                    auto p = cast(UT*)(new U[n]).ptr;
-                    *p = cast(UT) rhs;
-                }
+                static if (is(T == U[n], U, size_t n))
+                    auto p = cast(T*) (new U[n]).ptr;
                 else
-                {
-                    alias UT = Unqual!T;
-                    auto p = new UT;
-                    static if (isAssignable!UT)
-                    {
-                        *p = rhs;
-                    }
-                    else
-                    {
-                        import core.lifetime : emplace;
-                        emplace(p, rhs);
-                    }
-                }
-                memcpy(&store, &p, p.sizeof);
+                    auto p = new T;
+                copyEmplace(rhs, *p);
+                *(cast(T**) &store) = p;
             }
+
             fptr = &handler!(T);
         }
         return this;
@@ -1624,6 +1591,8 @@ useful when it is desirable to restrict what a discriminated type
 could hold to the end of defining simpler and more efficient
 manipulation.
 
+$(RED Warning: $(LREF Algebraic) is outdated and not recommended for use in new
+code. Instead, use $(REF SumType, std,sumtype).)
 */
 template Algebraic(T...)
 {
@@ -2051,15 +2020,6 @@ static class VariantException : Exception
     }
 }
 
-version (TestComplex)
-deprecated
-@system unittest
-{
-    auto v3 = Variant(1+2.0i);
-    hash[v3] = 2;
-    assert( hash[v3] == 2 );
-}
-
 @system unittest
 {
     // check comparisons incompatible with AllowedTypes
@@ -2483,11 +2443,11 @@ if (Handlers.length > 0)
 
     Algebraic!(int, string) maybenumber = 2;
     // ok, x ~ "a" valid for string, x + 1 valid for int, only 1 generic
-    static assert( __traits(compiles, number.visit!((string x) => x ~ "a", x => x + 1)));
+    static assert( __traits(compiles, maybenumber.visit!((string x) => x ~ "a", x => "foobar"[0 .. x + 1])));
     // bad, x ~ "a" valid for string but not int
-    static assert(!__traits(compiles, number.visit!(x => x ~ "a")));
+    static assert(!__traits(compiles, maybenumber.visit!(x => x ~ "a")));
     // bad, two generics, each only applies in one case
-    static assert(!__traits(compiles, number.visit!(x => x + 1, x => x ~ "a")));
+    static assert(!__traits(compiles, maybenumber.visit!(x => x + 1, x => x ~ "a")));
 }
 
 /**
@@ -2596,6 +2556,24 @@ if (isAlgebraic!VariantType && Handler.length > 0)
 
         Result result;
 
+        enum int nonmatch = ()
+        {
+            foreach (int dgidx, dg; Handler)
+            {
+                bool found = false;
+                foreach (T; AllowedTypes)
+                {
+                    found |= __traits(compiles, { static assert(isSomeFunction!(dg!T)); });
+                    found |= __traits(compiles, (T t) { dg(t); });
+                    found |= __traits(compiles, dg());
+                }
+                if (!found) return dgidx;
+            }
+            return -1;
+        }();
+        static assert(nonmatch == -1, "No match for visit handler #"~
+            nonmatch.stringof~" ("~Handler[nonmatch].stringof~")");
+
         foreach (tidx, T; AllowedTypes)
         {
             bool added = false;
@@ -2627,7 +2605,7 @@ if (isAlgebraic!VariantType && Handler.length > 0)
                         result.indices[tidx] = dgidx;
                     }
                 }
-                else static if (isSomeFunction!(dg!T))
+                else static if (__traits(compiles, { static assert(isSomeFunction!(dg!T)); }))
                 {
                     assert(result.generalFuncIdx == -1 ||
                            result.generalFuncIdx == dgidx,
@@ -2635,10 +2613,6 @@ if (isAlgebraic!VariantType && Handler.length > 0)
                     result.generalFuncIdx = dgidx;
                 }
                 // Handle composite visitors with opCall overloads
-                else
-                {
-                    static assert(false, dg.stringof ~ " is not a function or delegate");
-                }
             }
 
             if (!added)
@@ -2690,6 +2664,19 @@ if (isAlgebraic!VariantType && Handler.length > 0)
     }
 
     assert(false);
+}
+
+// https://issues.dlang.org/show_bug.cgi?id=21253
+@system unittest
+{
+    static struct A { int n; }
+    static struct B {        }
+
+    auto a = Algebraic!(A, B)(B());
+    assert(a.visit!(
+        (B _) => 42,
+        (a  ) => a.n
+    ) == 42);
 }
 
 @system unittest

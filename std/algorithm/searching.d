@@ -67,10 +67,10 @@ $(T2 maxElement,
         `maxElement([3, 4, 1, 2])` returns `4`.)
 $(T2 minIndex,
         Index of the minimal element of a range.
-        `minElement([3, 4, 1, 2])` returns `2`.)
+        `minIndex([3, 4, 1, 2])` returns `2`.)
 $(T2 maxIndex,
         Index of the maximal element of a range.
-        `maxElement([3, 4, 1, 2])` returns `1`.)
+        `maxIndex([3, 4, 1, 2])` returns `1`.)
 $(T2 minPos,
         `minPos([2, 3, 1, 3, 4, 1])` returns the subrange `[1, 3, 4, 1]`,
         i.e., positions the range at the first occurrence of its minimal
@@ -108,13 +108,13 @@ import std.traits;
 import std.typecons : Tuple, Flag, Yes, No, tuple;
 
 /++
-Checks if $(I _all) of the elements verify `pred`.
+Checks if $(I _all) of the elements satisfy `pred`.
  +/
 template all(alias pred = "a")
 {
     /++
-    Returns `true` if and only if $(I _all) values `v` found in the
-    input range `range` satisfy the predicate `pred`.
+    Returns `true` if and only if the input range `range` is empty
+    or $(I _all) values found in `range` satisfy the predicate `pred`.
     Performs (at most) $(BIGOH range.length) evaluations of `pred`.
      +/
     bool all(Range)(Range range)
@@ -155,16 +155,17 @@ are true.
 }
 
 /++
-Checks if $(I _any) of the elements verifies `pred`.
-`!any` can be used to verify that $(I none) of the elements verify
+Checks if $(I _any) of the elements satisfies `pred`.
+`!any` can be used to verify that $(I none) of the elements satisfy
 `pred`.
 This is sometimes called `exists` in other languages.
  +/
 template any(alias pred = "a")
 {
     /++
-    Returns `true` if and only if $(I _any) value `v` found in the
-    input range `range` satisfies the predicate `pred`.
+    Returns `true` if and only if the input range `range` is non-empty
+    and $(I _any) value found in `range` satisfies the predicate
+    `pred`.
     Performs (at most) $(BIGOH range.length) evaluations of `pred`.
      +/
     bool any(Range)(Range range)
@@ -965,8 +966,8 @@ if (isInputRange!R &&
     import std.ascii : isDigit;
     import std.uni : isWhite;
 
-    assert(countUntil!(std.uni.isWhite)("hello world") == 5);
-    assert(countUntil!(std.ascii.isDigit)("hello world") == -1);
+    assert(countUntil!(isWhite)("hello world") == 5);
+    assert(countUntil!(isDigit)("hello world") == -1);
     assert(countUntil!"a > 20"([0, 7, 12, 22, 9]) == 3);
 }
 
@@ -3577,7 +3578,7 @@ Note:
     ---
 
     If you want to get NaN as a result if a NaN is present in the range,
-    you can use $(REF fold, std.algorithm,iteration) and $(REF isNaN, std,math):
+    you can use $(REF fold, std,algorithm,iteration) and $(REF isNaN, std,math):
 
     ---
     <range>.fold!((a,b)=>a.isNaN || b.isNaN ? real.nan : a < b ? a : b);

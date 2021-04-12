@@ -1,4 +1,49 @@
 /**
+ * $(SCRIPT inhibitQuickIndex = 1;)
+ * $(DIVC quickindex,
+ * $(BOOKTABLE,
+ * $(TR $(TH Category) $(TH Symbols))
+ * $(TR $(TD Tid) $(TD
+ *     $(MYREF locate)
+ *     $(MYREF ownerTid)
+ *     $(MYREF register)
+ *     $(MYREF spawn)
+ *     $(MYREF spawnLinked)
+ *     $(MYREF thisTid)
+ *     $(MYREF Tid)
+ *     $(MYREF TidMissingException)
+ *     $(MYREF unregister)
+ * ))
+ * $(TR $(TD Message passing) $(TD
+ *     $(MYREF prioritySend)
+ *     $(MYREF receive)
+ *     $(MYREF receiveOnly)
+ *     $(MYREF receiveTimeout)
+ *     $(MYREF send)
+ *     $(MYREF setMaxMailboxSize)
+ * ))
+ * $(TR $(TD Message-related types) $(TD
+ *     $(MYREF LinkTerminated)
+ *     $(MYREF MailboxFull)
+ *     $(MYREF MessageMismatch)
+ *     $(MYREF OnCrowding)
+ *     $(MYREF OwnerTerminated)
+ *     $(MYREF PriorityMessageException)
+ * ))
+ * $(TR $(TD Scheduler) $(TD
+ *     $(MYREF FiberScheduler)
+ *     $(MYREF Generator)
+ *     $(MYREF Scheduler)
+ *     $(MYREF scheduler)
+ *     $(MYREF ThreadInfo)
+ *     $(MYREF ThreadScheduler)
+ *     $(MYREF yield)
+ * ))
+ * $(TR $(TD Misc) $(TD
+ *     $(MYREF initOnce)
+ * ))
+ * ))
+ *
  * This is a low-level messaging API upon which more structured or restrictive
  * APIs may be built.  The general idea is that every messageable entity is
  * represented by a common handle type called a Tid, which allows messages to
@@ -344,7 +389,7 @@ public:
      */
     void toString(scope void delegate(const(char)[]) sink)
     {
-        import std.format : formattedWrite;
+        import std.format.write : formattedWrite;
         formattedWrite(sink, "Tid(%x)", cast(void*) mbox);
     }
 
@@ -796,6 +841,7 @@ in
 do
 {
     import std.format : format;
+    import std.meta : allSatisfy;
     import std.typecons : Tuple;
 
     Tuple!(T) ret;
@@ -803,7 +849,7 @@ do
     thisInfo.ident.mbox.get((T val) {
         static if (T.length)
         {
-            static if (isAssignable!T)
+            static if (allSatisfy!(isAssignable, T))
             {
                 ret.field = val;
             }
@@ -886,6 +932,12 @@ do
     tid.send(1);
     string result = receiveOnly!string();
     assert(result == "Unexpected message type: expected 'string', got 'int'");
+}
+
+// https://issues.dlang.org/show_bug.cgi?id=21663
+@safe unittest
+{
+    alias test = receiveOnly!(string, bool, bool);
 }
 
 /**
@@ -2490,7 +2542,7 @@ private
             }
             if (n)
             {
-                import std.conv : emplace;
+                import core.lifetime : emplace;
                 emplace!Node(n, v);
             }
             else

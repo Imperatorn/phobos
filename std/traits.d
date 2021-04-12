@@ -59,6 +59,7 @@
  * ))
  * $(TR $(TD Type Conversion) $(TD
  *           $(LREF CommonType)
+ *           $(LREF AllImplicitConversionTargets)
  *           $(LREF ImplicitConversionTargets)
  *           $(LREF CopyTypeQualifiers)
  *           $(LREF CopyConstness)
@@ -1413,7 +1414,7 @@ if (func.length == 1 && isCallable!func)
     }
     else
     {
-        static assert(0, func[0].stringof ~ "is not a function");
+        static assert(0, func[0].stringof ~ " is not a function");
 
         // Define dummy entities to avoid pointless errors
         template Get(size_t i) { enum Get = ""; }
@@ -1526,7 +1527,7 @@ if (func.length == 1 && isCallable!func)
     }
     else
     {
-        static assert(0, func[0].stringof ~ "is not a function");
+        static assert(0, func[0].stringof ~ " is not a function");
 
         // Define dummy entities to avoid pointless errors
         template Get(size_t i) { enum Get = ""; }
@@ -3379,13 +3380,14 @@ private template hasAliasingImpl(T)
 /**
 Returns `true` if and only if `T`'s representation includes at
 least one of the following: $(OL $(LI a raw pointer `U*`;) $(LI an
-array `U[]`;) $(LI a reference to a class type `C`.)
-$(LI an associative array.) $(LI a delegate.))
+array `U[]`;) $(LI a reference to a class type `C`;)
+$(LI an associative array;) $(LI a delegate;)
+$(LI a [context pointer][isNested].))
  */
 template hasIndirections(T)
 {
     static if (is(T == struct) || is(T == union))
-        enum hasIndirections = anySatisfy!(.hasIndirections, FieldTypeTuple!T);
+        enum hasIndirections = anySatisfy!(.hasIndirections, typeof(T.tupleof));
     else static if (isStaticArray!T && is(T : E[N], E, size_t N))
         enum hasIndirections = is(E == void) ? true : hasIndirections!E;
     else static if (isFunctionPointer!T)
@@ -3466,6 +3468,9 @@ template hasIndirections(T)
     static assert( hasIndirections!S24);
     static assert( hasIndirections!S25);
     static assert( hasIndirections!S26);
+    int local;
+    struct HasContextPointer { int opCall() { return ++local; } }
+    static assert(hasIndirections!HasContextPointer);
 }
 
 // https://issues.dlang.org/show_bug.cgi?id=12000
@@ -5010,11 +5015,140 @@ Returns:
     An $(REF AliasSeq,std,meta) with all possible target types of an implicit
     conversion `T`.
 
-    If `T` is a class derived from `Object`, the the result of
+    If `T` is a class derived from `Object`, the result of
     $(LREF TransitiveBaseTypeTuple) is returned.
 
     If the type is not a built-in value type or a class derived from
-    `Object`, the an empty $(REF AliasSeq,std,meta) is returned.
+    `Object`, an empty $(REF AliasSeq,std,meta) is returned.
+
+See_Also:
+    $(LREF isImplicitlyConvertible)
+ */
+template AllImplicitConversionTargets(T)
+{
+    static if (is(T == bool))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(byte, ubyte, short, ushort, int, uint, long, ulong, CentTypeList,
+                       float, double, real, char, wchar, dchar);
+    else static if (is(T == byte))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(ubyte, short, ushort, int, uint, long, ulong, CentTypeList,
+                       float, double, real, char, wchar, dchar);
+    else static if (is(T == ubyte))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(byte, short, ushort, int, uint, long, ulong, CentTypeList,
+                       float, double, real, char, wchar, dchar);
+    else static if (is(T == short))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(ushort, int, uint, long, ulong, CentTypeList, float, double, real);
+    else static if (is(T == ushort))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(short, int, uint, long, ulong, CentTypeList, float, double, real);
+    else static if (is(T == int))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(uint, long, ulong, CentTypeList, float, double, real);
+    else static if (is(T == uint))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(int, long, ulong, CentTypeList, float, double, real);
+    else static if (is(T == long))
+        alias AllImplicitConversionTargets = AliasSeq!(ulong, float, double, real);
+    else static if (is(T == ulong))
+        alias AllImplicitConversionTargets = AliasSeq!(long, float, double, real);
+    else static if (is(cent) && is(T == cent))
+        alias AllImplicitConversionTargets = AliasSeq!(UnsignedCentTypeList, float, double, real);
+    else static if (is(ucent) && is(T == ucent))
+        alias AllImplicitConversionTargets = AliasSeq!(SignedCentTypeList, float, double, real);
+    else static if (is(T == float))
+        alias AllImplicitConversionTargets = AliasSeq!(double, real);
+    else static if (is(T == double))
+        alias AllImplicitConversionTargets = AliasSeq!(float, real);
+    else static if (is(T == real))
+        alias AllImplicitConversionTargets = AliasSeq!(float, double);
+    else static if (is(T == char))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(wchar, dchar, byte, ubyte, short, ushort,
+                       int, uint, long, ulong, CentTypeList, float, double, real);
+    else static if (is(T == wchar))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(dchar, short, ushort, int, uint, long, ulong, CentTypeList,
+                       float, double, real);
+    else static if (is(T == dchar))
+        alias AllImplicitConversionTargets =
+            AliasSeq!(int, uint, long, ulong, CentTypeList, float, double, real);
+    else static if (is(T : typeof(null)))
+        alias AllImplicitConversionTargets = AliasSeq!(typeof(null));
+    else static if (is(T == class))
+        alias AllImplicitConversionTargets = staticMap!(ApplyLeft!(CopyConstness, T), TransitiveBaseTypeTuple!(T));
+    else static if (isDynamicArray!T && !is(typeof(T.init[0]) == const))
+    {
+       static if (is(typeof(T.init[0]) == shared))
+           alias AllImplicitConversionTargets =
+           AliasSeq!(const(shared(Unqual!(typeof(T.init[0]))))[]);
+       else
+           alias AllImplicitConversionTargets =
+           AliasSeq!(const(Unqual!(typeof(T.init[0])))[]);
+    }
+    else static if (is(T : void*))
+        alias AllImplicitConversionTargets = AliasSeq!(void*);
+    else
+        alias AllImplicitConversionTargets = AliasSeq!();
+}
+
+///
+@safe unittest
+{
+    import std.meta : AliasSeq;
+
+    static assert(is(AllImplicitConversionTargets!(ulong) == AliasSeq!(long, float, double, real)));
+    static assert(is(AllImplicitConversionTargets!(int) == AliasSeq!(uint, long, ulong, float, double, real)));
+    static assert(is(AllImplicitConversionTargets!(float) == AliasSeq!(double, real)));
+    static assert(is(AllImplicitConversionTargets!(double) == AliasSeq!(float, real)));
+
+    static assert(is(AllImplicitConversionTargets!(char) == AliasSeq!(
+        wchar, dchar, byte, ubyte, short, ushort, int, uint, long, ulong, float, double, real
+    )));
+    static assert(is(AllImplicitConversionTargets!(wchar) == AliasSeq!(
+        dchar, short, ushort, int, uint, long, ulong, float, double, real
+    )));
+    static assert(is(AllImplicitConversionTargets!(dchar) == AliasSeq!(
+        int, uint, long, ulong, float, double, real
+    )));
+
+    static assert(is(AllImplicitConversionTargets!(string) == AliasSeq!(const(char)[])));
+    static assert(is(AllImplicitConversionTargets!(void*) == AliasSeq!(void*)));
+
+    interface A {}
+    interface B {}
+    class C : A, B {}
+
+    static assert(is(AllImplicitConversionTargets!(C) == AliasSeq!(Object, A, B)));
+    static assert(is(AllImplicitConversionTargets!(const C) == AliasSeq!(const Object, const A, const B)));
+    static assert(is(AllImplicitConversionTargets!(immutable C) == AliasSeq!(
+        immutable Object, immutable A, immutable B
+    )));
+}
+
+@safe unittest
+{
+    static assert(is(AllImplicitConversionTargets!(double)[0] == float));
+    static assert(is(AllImplicitConversionTargets!(double)[1] == real));
+    static assert(is(AllImplicitConversionTargets!(string)[0] == const(char)[]));
+}
+
+
+/**
+Params:
+    T = The type to check
+
+Returns:
+    An $(REF AliasSeq,std,meta) with all possible target types of an implicit
+    conversion `T`.
+
+    If `T` is a class derived from `Object`, the result of
+    $(LREF TransitiveBaseTypeTuple) is returned.
+
+    If the type is not a built-in value type or a class derived from
+    `Object`, an empty $(REF AliasSeq,std,meta) is returned.
 
 Note:
     The possible targets are computed more conservatively than the
@@ -6099,7 +6233,7 @@ template BuiltinTypeOf(T)
 /**
  * Detect whether `T` is a built-in boolean type.
  */
-enum bool isBoolean(T) = __traits(isUnsigned, T) && is(BooleanTypeOf!T);
+enum bool isBoolean(T) = __traits(isUnsigned, T) && is(T : bool);
 
 ///
 @safe unittest
@@ -6192,12 +6326,6 @@ enum bool isFloatingPoint(T) = __traits(isFloating, T) && !is(T : ireal) && !is(
 
     static assert(!isFloatingPoint!int);
 
-    // complex and imaginary numbers do not pass
-    static assert(
-        !isFloatingPoint!cfloat &&
-        !isFloatingPoint!ifloat
-    );
-
     // types which act as floating point values do not pass
     struct S
     {
@@ -6227,18 +6355,6 @@ enum bool isFloatingPoint(T) = __traits(isFloating, T) && !is(T : ireal) && !is(
             static assert(!isFloatingPoint!(Q!T));
         }
     }
-}
-
-// https://issues.dlang.org/show_bug.cgi?id=17195
-@safe unittest
-{
-    static assert(!isFloatingPoint!cfloat);
-    static assert(!isFloatingPoint!cdouble);
-    static assert(!isFloatingPoint!creal);
-
-    static assert(!isFloatingPoint!ifloat);
-    static assert(!isFloatingPoint!idouble);
-    static assert(!isFloatingPoint!ireal);
 }
 
 /**
@@ -6621,7 +6737,6 @@ enum bool isOrderingComparable(T) = is(typeof((ref T a) => a < a ? 1 : 0));
 {
     static assert(isOrderingComparable!int);
     static assert(isOrderingComparable!string);
-    static assert(!isOrderingComparable!creal);
 
     static struct Foo {}
     static assert(!isOrderingComparable!Foo);
@@ -6661,13 +6776,6 @@ enum bool isEqualityComparable(T) = is(typeof((ref T a) => a == a ? 1 : 0));
     static assert(isEqualityComparable!Bar);
     assert(b1 == b2);
     assert(b1 != b3);
-}
-
-version (TestComplex)
-deprecated
-@safe unittest
-{
-    static assert(isEqualityComparable!creal);
 }
 
 /**
@@ -6766,7 +6874,7 @@ template isAutodecodableString(T)
     import std.range.primitives : autodecodeStrings;
 
     enum isAutodecodableString = autodecodeStrings &&
-        (is(T : const char[]) || is(T : const wchar[])) && !isStaticArray!T;
+        (is(T : const char[]) || is(T : const wchar[])) && !is(T : U[n], U, size_t n);
 }
 
 ///
@@ -6845,7 +6953,19 @@ enum bool isStaticArray(T) = __traits(isStaticArray, T);
 /**
  * Detect whether type `T` is a dynamic array.
  */
-enum bool isDynamicArray(T) = is(DynamicArrayTypeOf!T) && !isAggregateType!T;
+template isDynamicArray(T)
+{
+    static if (is(T == U[], U))
+        enum bool isDynamicArray = true;
+    else static if (is(T U == enum))
+        // BUG: isDynamicArray / isStaticArray considers enums
+        // with appropriate base types as dynamic/static arrays
+        // Retain old behaviour for now, see
+        // https://github.com/dlang/phobos/pull/7574
+        enum bool isDynamicArray = isDynamicArray!U;
+    else
+        enum bool isDynamicArray = false;
+}
 
 ///
 @safe unittest
@@ -6869,6 +6989,24 @@ enum bool isDynamicArray(T) = is(DynamicArrayTypeOf!T) && !isAggregateType!T;
             static assert(!isDynamicArray!( SubTypeOf!(Q!T) ));
         }
     }
+
+    static assert(!isDynamicArray!(int[5]));
+
+    static struct AliasThis
+    {
+        int[] values;
+        alias values this;
+    }
+
+    static assert(!isDynamicArray!AliasThis);
+
+    // https://github.com/dlang/phobos/pull/7574/files#r464115492
+    enum E : string
+    {
+        a = "a",
+        b = "b",
+    }
+    static assert( isDynamicArray!E);
 }
 
 /**
@@ -7255,19 +7393,7 @@ template isTypeTuple(T...)
 /**
 Detect whether symbol or type `T` is a function pointer.
  */
-template isFunctionPointer(T...)
-if (T.length == 1)
-{
-    static if (is(T[0] U) || is(typeof(T[0]) U))
-    {
-        static if (is(U F : F*) && is(F == function))
-            enum bool isFunctionPointer = true;
-        else
-            enum bool isFunctionPointer = false;
-    }
-    else
-        enum bool isFunctionPointer = false;
-}
+enum bool isFunctionPointer(alias T) = is(typeof(*T) == function);
 
 ///
 @safe unittest
@@ -7291,22 +7417,7 @@ if (T.length == 1)
 /**
 Detect whether symbol or type `T` is a delegate.
 */
-template isDelegate(T...)
-if (T.length == 1)
-{
-    static if (is(typeof(& T[0]) U : U*) && is(typeof(& T[0]) U == delegate))
-    {
-        // T is a (nested) function symbol.
-        enum bool isDelegate = true;
-    }
-    else static if (is(T[0] W) || is(typeof(T[0]) W))
-    {
-        // T is an expression or a type.  Take the type of it and examine.
-        enum bool isDelegate = is(W == delegate);
-    }
-    else
-        enum bool isDelegate = false;
-}
+enum bool isDelegate(alias T) = is(typeof(T) == delegate) || is(T == delegate);
 
 ///
 @safe unittest
@@ -7398,34 +7509,72 @@ if (T.length == 1)
 Detect whether `T` is a callable object, which can be called with the
 function call operator `$(LPAREN)...$(RPAREN)`.
  */
-template isCallable(T...)
-if (T.length == 1)
+template isCallable(alias callable)
 {
-    static if (is(typeof(& T[0].opCall) == delegate))
+    static if (is(typeof(&callable.opCall) == delegate))
         // T is a object which has a member function opCall().
         enum bool isCallable = true;
-    else static if (is(typeof(& T[0].opCall) V : V*) && is(V == function))
+    else static if (is(typeof(&callable.opCall) V : V*) && is(V == function))
         // T is a type which has a static member function opCall().
         enum bool isCallable = true;
+    else static if (is(typeof(&callable!())))
+    {
+        alias TemplateInstanceType = typeof(&callable!());
+        enum bool isCallable = isCallable!TemplateInstanceType;
+    }
     else
-        enum bool isCallable = isSomeFunction!T;
+    {
+        enum bool isCallable = isSomeFunction!callable;
+    }
 }
 
-///
+/// Functions, lambdas, and aggregate types with (static) opCall.
 @safe unittest
 {
-    interface I { real value() @property; }
-    struct S { static int opCall(int) { return 0; } }
+    void f() { }
+    int g(int x) { return x; }
+
+    static assert( isCallable!f);
+    static assert( isCallable!g);
+
     class C { int opCall(int) { return 0; } }
     auto c = new C;
+    struct S { static int opCall(int) { return 0; } }
+    interface I { real value() @property; }
 
     static assert( isCallable!c);
-    static assert( isCallable!S);
     static assert( isCallable!(c.opCall));
+    static assert( isCallable!S);
     static assert( isCallable!(I.value));
     static assert( isCallable!((int a) { return a; }));
 
     static assert(!isCallable!I);
+}
+
+/// Templates
+@safe unittest
+{
+    void f()() { }
+    T g(T = int)(T x) { return x; }
+
+    static assert( isCallable!f);
+    static assert( isCallable!g);
+}
+
+/// Overloaded functions and function templates.
+@safe unittest
+{
+    static struct Wrapper
+    {
+        void f() { }
+        int f(int x) { return x; }
+
+        void g()() { }
+        T g(T = int)(T x) { return x; }
+    }
+
+    static assert(isCallable!(Wrapper.f));
+    static assert(isCallable!(Wrapper.g));
 }
 
 

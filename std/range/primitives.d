@@ -814,7 +814,7 @@ pure @safe unittest
 // https://issues.dlang.org/show_bug.cgi?id=10571
 @safe unittest
 {
-    import std.format;
+    import std.format.write : formattedWrite;
     string buf;
     formattedWrite((scope const(char)[] s) { buf ~= s; }, "%s", "hello");
     assert(buf == "hello");
@@ -822,7 +822,7 @@ pure @safe unittest
 
 @safe unittest
 {
-    import std.format;
+    import std.format.write : formattedWrite;
     import std.meta : AliasSeq;
     struct PutC(C)
     {
@@ -1750,6 +1750,20 @@ if (isInputRange!Range && !isInfinite!Range)
     else
     {
         size_t result;
+        static if (autodecodeStrings && isNarrowString!Range)
+        {
+            import std.utf : codeUnitLimit;
+            result = range.length;
+            foreach (const i, const c; range)
+            {
+                if (c >= codeUnitLimit!Range)
+                {
+                    result = i;
+                    break;
+                }
+            }
+            range = range[result .. $];
+        }
         for ( ; !range.empty ; range.popFront() )
             ++result;
         return result;
@@ -1766,6 +1780,20 @@ if (isInputRange!Range)
     else
     {
         size_t result;
+        static if (autodecodeStrings && isNarrowString!Range)
+        {
+            import std.utf : codeUnitLimit;
+            result = upTo > range.length ? range.length : upTo;
+            foreach (const i, const c; range[0 .. result])
+            {
+                if (c >= codeUnitLimit!Range)
+                {
+                    result = i;
+                    break;
+                }
+            }
+            range = range[result .. $];
+        }
         for ( ; result < upTo && !range.empty ; range.popFront() )
             ++result;
         return result;

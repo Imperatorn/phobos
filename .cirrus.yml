@@ -17,7 +17,7 @@ environment:
   CIRRUS_CLONE_DEPTH: 1
   # for ci.sh:
   MODEL: 64
-  HOST_DC: dmd
+  HOST_DMD: dmd
   N: 4
   OS_NAME: linux
   FULL_BUILD: false
@@ -60,5 +60,6 @@ task:
   timeout_in: 60m
   environment:
     OS_NAME: freebsd
+    CI_DFLAGS: -version=TARGET_FREEBSD12
   install_bash_and_git_script: pkg install -y bash git
   << : *COMMON_STEPS_TEMPLATE
